@@ -1,0 +1,53 @@
+#pragma once
+
+// Copy this file to Config.h (which is gitignored) and fill in your own values.
+
+#define WIFI_SSID "your-wifi-ssid"
+#define WIFI_PASSWORD "your-wifi-password"
+
+// Your WiiM device's IP address on the local network (find it in the WiiM Home app under
+// Device Info, or check your router's DHCP client list). A static DHCP reservation is
+// recommended so this doesn't need updating.
+#define WIIM_HOST "192.168.1.50"
+
+// The WiiM HTTP API is served over HTTPS with a self-signed certificate, on the local
+// network only. We intentionally skip certificate validation (WiFiClientSecure::setInsecure)
+// since there is no CA to validate against and the device is only reachable on your LAN.
+
+// How often to poll the WiiM for play/pause/volume state.
+#define POLL_STATUS_MS 1200
+
+// How often to poll for track metadata (title/artist/album/art). This is separate and slower
+// since it also triggers an album art re-fetch when the track changes.
+#define POLL_METADATA_MS 3000
+
+// Volume change (0-100 scale) applied per knob detent.
+#define VOLUME_STEP_PER_DETENT 2
+
+// --- Power management ---
+
+// Turn the backlight off after this many seconds without a touch or knob turn. The knob still
+// changes volume while the screen is off (and turning it, or touching the screen, turns the
+// backlight back on) -- this only saves the backlight's own power draw, not WiFi/CPU.
+#define SCREEN_TIMEOUT_S 30
+
+// Go into deep sleep after this many minutes without a touch or knob turn, for the much larger
+// savings of shutting down WiFi and the CPU. Wake it back up by turning the knob or touching
+// the screen -- either one pulses a GPIO the chip watches for while asleep. Waking is a full
+// reboot (a few seconds to reconnect to Wi-Fi), not an instant resume.
+#define DEEP_SLEEP_TIMEOUT_MIN 10
+
+// --- Battery (rough estimate only -- this board has no fuel-gauge chip) ---
+
+// GPIO1 is a community-documented candidate for a battery voltage sense pin, unverified by
+// Waveshare. BATTERY_DIVIDER_RATIO is (Rtop+Rbottom)/Rbottom for whatever divider is on that
+// pin -- also unverified. Calibrate both against a multimeter reading of the real battery
+// before trusting the percentage (compare power::battery::read().voltage against what a
+// meter reads directly across the cell, and adjust the ratio until they match).
+#define BATTERY_ADC_PIN 1
+#define BATTERY_DIVIDER_RATIO 2.0f
+
+// Rough full-charge runtime in hours, used only to turn a percentage into a "time left"
+// estimate (percent/100 * this). Start with a guess and adjust once you've observed real
+// battery life with your own usage pattern and power management timeouts.
+#define BATTERY_FULL_RUNTIME_HOURS 8.0f
