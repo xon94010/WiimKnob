@@ -24,6 +24,16 @@ that turns it into a small WiiM remote:
 
 This is a first working version, not a finished product — see **Ideas for next steps** below.
 
+## Screenshots
+
+<table>
+<tr>
+<td><img src="docs/screenshot-controls.jpg" width="260" alt="Controls screen: album art, volume badge, battery icon, title/artist, and the prev/play-pause/next pill"></td>
+<td><img src="docs/screenshot-angle.jpg" width="260" alt="Controls screen viewed at an angle, showing the physical knob and case"></td>
+<td><img src="docs/screenshot-now-playing.jpg" width="260" alt="Now playing screen: full-screen album art with nothing else overlaid"></td>
+</tr>
+</table>
+
 ## Hardware background
 
 Waveshare hasn't published a pinout or demo code for this board (its wiki page is a
