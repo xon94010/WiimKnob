@@ -1,5 +1,14 @@
 #include "Ui.h"
 
+// Generated from Montserrat-Medium.ttf + the same FontAwesome symbol subset LVGL's own
+// built-in fonts use, but with the main range extended to 0x20-0x7F,0xA0-0x17F,0x2022 instead
+// of just ASCII -- see src/ui/fonts/ for the command. The stock lv_font_montserrat_16/20 only
+// cover ASCII plus the icon symbols, so any accented character (e.g. the O with diaeresis in
+// "Magnus Ostrom") had no glyph to draw at all. Only used where real track/artist text shows
+// up; the icon buttons and the volume number stay on the stock fonts.
+LV_FONT_DECLARE(lv_font_montserrat_20_latin);
+LV_FONT_DECLARE(lv_font_montserrat_16_latin);
+
 namespace ui {
 
 namespace {
@@ -30,6 +39,7 @@ lv_obj_t *volumeLabel = nullptr;
 lv_obj_t *titleLabel = nullptr;
 lv_obj_t *artistLabel = nullptr;
 lv_obj_t *playPauseIcon = nullptr;
+lv_obj_t *statusDot = nullptr;
 lv_obj_t *batteryBadge = nullptr;      // clickable: taps toggle icon <-> percent
 lv_obj_t *batteryIconOutline = nullptr;
 lv_obj_t *batteryIconNub = nullptr;
@@ -261,6 +271,26 @@ void begin(const Callbacks &cbs) {
   lv_label_set_text(batteryPercentLabel, "--%");
   lv_obj_add_flag(batteryPercentLabel, LV_OBJ_FLAG_HIDDEN); // shown only after a tap
 
+  // Small connectivity dot above the art: green once the last WiiM poll succeeded, red if not.
+  lv_obj_t *dotBacking = lv_obj_create(ctrl);
+  lv_obj_set_size(dotBacking, 20, 20);
+  lv_obj_set_style_radius(dotBacking, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_border_width(dotBacking, 0, 0);
+  lv_obj_set_style_bg_color(dotBacking, lv_color_black(), 0);
+  lv_obj_set_style_bg_opa(dotBacking, LV_OPA_50, 0);
+  lv_obj_align(dotBacking, LV_ALIGN_CENTER, 0, -150);
+  lv_obj_clear_flag(dotBacking, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(dotBacking, LV_OBJ_FLAG_CLICKABLE);
+
+  statusDot = lv_obj_create(ctrl);
+  lv_obj_set_size(statusDot, 10, 10);
+  lv_obj_set_style_radius(statusDot, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_border_width(statusDot, 0, 0);
+  lv_obj_set_style_bg_color(statusDot, lv_palette_main(LV_PALETTE_RED), 0);
+  lv_obj_align(statusDot, LV_ALIGN_CENTER, 0, -150);
+  lv_obj_clear_flag(statusDot, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(statusDot, LV_OBJ_FLAG_CLICKABLE);
+
   volumeArc = lv_arc_create(ctrl);
   lv_obj_set_size(volumeArc, 356, 356);
   lv_obj_center(volumeArc);
@@ -280,7 +310,7 @@ void begin(const Callbacks &cbs) {
   lv_obj_set_width(titleLabel, 260);
   lv_label_set_long_mode(titleLabel, LV_LABEL_LONG_SCROLL_CIRCULAR);
   lv_obj_set_style_text_align(titleLabel, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_style_text_font(titleLabel, &lv_font_montserrat_20, 0);
+  lv_obj_set_style_text_font(titleLabel, &lv_font_montserrat_20_latin, 0);
   lv_obj_set_style_text_color(titleLabel, lv_color_white(), 0);
   lv_obj_align(titleLabel, LV_ALIGN_CENTER, 0, 30);
   lv_label_set_text(titleLabel, "Not playing");
@@ -289,7 +319,7 @@ void begin(const Callbacks &cbs) {
   lv_obj_set_width(artistLabel, 260);
   lv_label_set_long_mode(artistLabel, LV_LABEL_LONG_SCROLL_CIRCULAR);
   lv_obj_set_style_text_align(artistLabel, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_style_text_font(artistLabel, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_font(artistLabel, &lv_font_montserrat_16_latin, 0);
   lv_obj_set_style_text_color(artistLabel, lv_color_hex(0xa0a0a0), 0);
   lv_obj_align(artistLabel, LV_ALIGN_CENTER, 0, 53);
   lv_label_set_text(artistLabel, "");
@@ -331,6 +361,11 @@ void setVolume(int volume0to100) {
 
 void setPlaying(bool playing) {
   lv_label_set_text(playPauseIcon, playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+}
+
+void setConnected(bool connected) {
+  lv_obj_set_style_bg_color(statusDot,
+                             connected ? lv_palette_main(LV_PALETTE_GREEN) : lv_palette_main(LV_PALETTE_RED), 0);
 }
 
 void setBattery(int percent0to100, bool charging) {

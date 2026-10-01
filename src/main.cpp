@@ -4,6 +4,7 @@
 
 #include "Config.h"
 #include "display/DisplayDriver.h"
+#include "haptics/Haptics.h"
 #include "input/Knob.h"
 #include "input/Touch.h"
 #include "power/Battery.h"
@@ -35,9 +36,18 @@ void touchReadCb(lv_indev_drv_t *drv, lv_indev_data_t *data) {
   }
 }
 
-void onPrev() { wiim::task::requestPrevious(); }
-void onNext() { wiim::task::requestNext(); }
-void onPlayPause() { wiim::task::requestTogglePause(); }
+void onPrev() {
+  wiim::task::requestPrevious();
+  haptics::buzz();
+}
+void onNext() {
+  wiim::task::requestNext();
+  haptics::buzz();
+}
+void onPlayPause() {
+  wiim::task::requestTogglePause();
+  haptics::buzz();
+}
 
 void connectWiFi() {
   WiFi.mode(WIFI_STA);
@@ -54,6 +64,8 @@ void connectWiFi() {
 // protected struct copies), so it's fine to call every loop() iteration -- no polling timer of
 // its own needed here, since wiim::task owns that cadence.
 void syncUiFromWiimTask() {
+  ui::setConnected(wiim::task::isConnected());
+
   wiim::PlayerState state = wiim::task::getPlayerState();
   ui::setPlaying(state.status == "play");
 
@@ -117,6 +129,7 @@ void setup() {
   lv_indev_drv_register(&indevDrv);
 
   touch.begin();
+  haptics::begin(); // after touch.begin(), which brings up the I2C bus haptics shares
   input::knob::begin();
   power::begin();
   power::battery::begin();
@@ -127,7 +140,17 @@ void setup() {
 }
 
 void loop() {
-  display::tick();
+  if (power::isScreenOn()) {
+    display::tick(); // pumps LVGL, which reads touch via the indev callback above
+  } else {
+    // LVGL isn't running, so nothing is calling touchReadCb -- poll directly just to notice a
+    // wake-worthy touch. The next loop() iteration resumes display::tick() as normal once
+    // noteActivity() turns the backlight back on.
+    int16_t x, y;
+    if (touch.read(x, y)) {
+      power::noteActivity();
+    }
+  }
   serviceKnob();
   syncUiFromWiimTask();
   serviceBattery();

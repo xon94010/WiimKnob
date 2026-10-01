@@ -71,4 +71,6 @@ void service() {
   }
 }
 
+bool isScreenOn() { return screenOn; }
+
 } // namespace power

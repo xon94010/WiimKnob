@@ -31,3 +31,8 @@
 // See docs/hardware/input.md in the repo above for how this was measured.
 #define PIN_KNOB_CW 8
 #define PIN_KNOB_CCW 7
+
+// --- Haptics: DRV2605L, I2C address 0x5A, shares the touch controller's bus (SDA/SCL above).
+// The chip answers on I2C whether or not this pin is driven, but its output stage stays off
+// (and everything feels like "no motor attached") until this pin is held high.
+#define PIN_HAPTIC_ENABLE 38

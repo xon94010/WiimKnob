@@ -1,18 +1,26 @@
 # WiimKnob
 
+![WiimKnob banner](docs/banner.webp)
+
 Firmware for the [Waveshare ESP32-S3-Knob-Touch-LCD-1.8](https://www.waveshare.com/esp32-s3-knob-touch-lcd-1.8.htm)
 that turns it into a small WiiM remote:
 
-- Turn the knob to change volume.
+- Turn the knob to change volume, with a light haptic buzz on button presses (prev/play-pause/
+  next) via the board's DRV2605L driver.
 - Two swipeable screens: a full-screen "now playing" ambient view (just the album art, nothing
-  else), and a controls screen with a smaller circular art inset, title/artist, prev/play-pause/
-  next buttons, a power button, and a battery gauge. Swipe left/right between them.
+  else), and a controls screen with a smaller circular art inset, title/artist, a transparent
+  pill holding the prev/play-pause/next controls, a plain-number volume badge, and a real
+  battery-shaped gauge. Swipe left/right between them.
 - A red ring around the edge of the controls screen shows the current volume, matching the
   knob; a thin red highlight marks the play/pause button. Everything else is neutral (dark
   buttons, white icons) so the volume/playback accent doesn't get lost in the noise.
+- Tap the battery icon to flip it to a plain percentage (tap again to flip back); it pulses
+  while charging is detected.
 - Power-aware: the screen dims out after a short idle timeout (the knob still works while it's
-  off), the whole board deep-sleeps after a longer one (waking on a touch or knob turn), and the
-  power button on the controls screen triggers that same deep sleep on demand.
+  off, and LVGL itself stops redrawing to save CPU/SPI time), and the whole board deep-sleeps
+  after a longer one, waking on a touch or knob turn.
+- Handles accented/non-ASCII track and artist names correctly (see **Fonts** below) — the
+  stock LVGL fonts only cover plain ASCII.
 
 This is a first working version, not a finished product — see **Ideas for next steps** below.
 
@@ -78,11 +86,36 @@ Deep sleep intentionally does not try to preserve any state (in-flight volume ch
 track, etc.) — the display and WiiM state just repopulate over the first second or two after
 wake, the same as a normal boot.
 
+## Haptics
+
+The board has a DRV2605L LRA haptic driver on the touch controller's I2C bus (address `0x5A`),
+enabled via GPIO38. Per the community research this project relies on for its pinout, the chip
+answers on I2C regardless of that pin's state but its output stage stays off — and everything
+feels like no motor is attached — until GPIO38 is driven high. `src/haptics/Haptics.cpp` enables
+it, configures the driver for LRA playback (not the ERM default), and fires a short "click"
+effect on every prev/play-pause/next tap. It deliberately skips the DRV2605L's calibration
+registers (rated voltage, overdrive clamp, auto-cal) — the ROM-library default felt effect
+works fine on this board without them, and getting those wrong is how you end up silently
+over-driving the actuator.
+
+## Fonts
+
+The stock LVGL `lv_font_montserrat_16`/`_20` only include ASCII plus the icon symbols — verified
+directly from their compiled-in glyph range tables, not assumed. Any accented character (é, ö,
+ñ, etc., e.g. in a track or artist name) had no glyph to draw at all. `src/ui/fonts/` has two
+regenerated replacements (`lv_font_montserrat_16_latin`/`_20_latin`, used for the title/artist
+labels only) built from the same Montserrat-Medium.ttf + FontAwesome5 symbol set LVGL's own
+build uses, with the main range extended to cover Latin-1 Supplement and Latin Extended-A
+(`0x20-0x7F,0xA0-0x17F,0x2022`) — enough for French, German, Spanish, Nordic, Polish, Czech,
+and most other Western/Central European text. The exact `lv_font_conv` command is in each
+file's own header comment if you need to extend the range further (e.g. for Cyrillic or Greek).
+
 ## Battery gauge
 
-The controls screen shows a 5-bar battery gauge next to the power button. This board has no
-fuel-gauge chip and no confirmed charger-status pin, so both pieces of this are estimates, not
-hard readings — see the comments in `src/power/Battery.h`/`.cpp`:
+The controls screen shows a real battery-shaped icon (not just bars) with a proportional,
+color-coded fill, next to the plain-number volume badge. This board has no fuel-gauge chip and
+no confirmed charger-status pin, so both pieces of this are estimates, not hard readings — see
+the comments in `src/power/Battery.h`/`.cpp`:
 
 - **Level**: read from `BATTERY_ADC_PIN` (GPIO1, a community-documented but Waveshare-unverified
   candidate for the battery sense pin) and converted through `BATTERY_DIVIDER_RATIO` and a
@@ -143,32 +176,25 @@ include/
 src/
   main.cpp          setup/loop: Wi-Fi, polling, input wiring
   display/          QSPI bus + ST77916 panel bring-up, LVGL display driver glue
+  haptics/          DRV2605L LRA haptic feedback
   input/            knob (pulse decoding) and touch (CST816D) drivers
   power/            screen-timeout + deep-sleep idle management, battery estimate
   wiim/             WiiM HTTP API client + album art JPEG fetch/decode
   ui/                the two-screen LVGL layout (ambient + controls) and gesture navigation
+    fonts/            regenerated fonts with accented-character support, see Fonts above
 ```
 
 ## Ideas for next steps
 
 - **Auto-discovery**: currently the WiiM's IP is hardcoded in `Config.h`. mDNS/SSDP discovery
   would remove that step.
-- **Haptics**: the board has a DRV2605L haptic driver (I2C `0x5A`, enabled via GPIO38) that
-  isn't wired up here — a light buzz per knob detent or button press would feel good.
 - **Backlight dimming**: `display::setBacklight()` is on/off only; the backlight pin (GPIO47)
   is PWM-capable if you want to add a brightness setting or auto-dim.
 - **Multiroom awareness**: the WiiM API exposes multiroom group info; the UI doesn't show or
   control it yet.
-- **Better album art scaling**: art is decoded with JPEGDEC's built-in 1/2/1/4/1/8 scaling and
-  then zoomed by LVGL, which is nearest-neighbor. Fine for a first pass; a proper downscale
-  filter would look sharper for small cover art.
-- **Pause LVGL redraws while the screen is off**: right now `display::tick()` (and the WiiM
-  polling) keeps running unchanged with the backlight off, so animations (the scrolling
-  title/artist labels) still cost CPU/SPI time for a screen nobody can see. Skipping
-  `lv_timer_handler()` while off would save a little more before the deep-sleep tier kicks in.
-- **No connectivity indicator anymore**: the controls screen used to have a small dot showing
-  whether the last WiiM poll succeeded; it was dropped in the screen redesign. `wiim::task::
-  isConnected()` still exists and is accurate, it's just not surfaced in the UI right now.
 - **Charging detection is a voltage-trend guess** (see the Battery gauge section) because this
   board has no confirmed charger-status pin. If you find one by probing the charge IC directly,
   wiring it to a GPIO and reading it would be far more reliable than the current heuristic.
+- **Wider Unicode coverage**: the regenerated fonts (see Fonts above) cover Western/Central
+  European accents but not Cyrillic, Greek, or CJK — extend the `lv_font_conv` range if you
+  need those.

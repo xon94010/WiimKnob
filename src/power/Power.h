@@ -14,4 +14,9 @@ void noteActivity();
 // sleep never returns -- the board reboots into setup() when a wake source fires.
 void service();
 
+// Whether the backlight is currently on. Useful for callers that want to skip work that only
+// matters while something is actually visible (see main.cpp's loop(), which stops pumping
+// LVGL -- and therefore stops reading touch through it -- while this is false).
+bool isScreenOn();
+
 } // namespace power
