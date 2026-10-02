@@ -5,15 +5,19 @@
 Firmware for the [Waveshare ESP32-S3-Knob-Touch-LCD-1.8](https://www.waveshare.com/esp32-s3-knob-touch-lcd-1.8.htm)
 that turns it into a small WiiM remote:
 
-- Turn the knob to change volume, with a light haptic buzz on button presses (prev/play-pause/
-  next) via the board's DRV2605L driver.
-- Two swipeable screens: a full-screen "now playing" ambient view (just the album art, nothing
-  else), and a controls screen with a smaller circular art inset, title/artist, a transparent
-  pill holding the prev/play-pause/next controls, a plain-number volume badge, and a real
-  battery-shaped gauge. Swipe left/right between them.
+- Turn the knob to change volume, with a light haptic buzz on taps (buttons, presets, albums)
+  via the board's DRV2605L driver.
+- Four swipeable screens, left to right:
+  1. **Controls**: a circular art inset, title/artist, a transparent pill holding the
+     prev/play-pause/next controls, a plain-number volume badge, and a battery-shaped gauge.
+  2. **Now playing**: full-screen album art, nothing else.
+  3. **Recently played**: the last 10 albums as thumbnails (rows of 3-4-3). Tap one to play it
+     again. See **Recently played** below.
+  4. **Presets**: your WiiM Home presets as tiles, named and described by what each one does
+     (switch input, output, EQ). Tap one to fire it. See **Presets** below.
 - A red ring around the edge of the controls screen shows the current volume, matching the
-  knob; a thin red highlight marks the play/pause button. Everything else is neutral (dark
-  buttons, white icons) so the volume/playback accent doesn't get lost in the noise.
+  knob. Everything else is neutral (dark buttons, white icons) so that accent doesn't get lost
+  in the noise; red also marks the last tapped preset/album.
 - Tap the battery icon to flip it to a plain percentage (tap again to flip back); it pulses
   while charging is detected.
 - Power-aware: the screen dims out after a short idle timeout (the knob still works while it's
@@ -62,19 +66,73 @@ verified against a public CA.
 
 Commands used: `getPlayerStatus` (play state, volume), `getMetaInfo` (title/artist/album/cover
 URL), `setPlayerCmd:vol:<0-100>`, `setPlayerCmd:onepause`, `setPlayerCmd:next`,
-`setPlayerCmd:prev`.
+`setPlayerCmd:prev`, `MCUKeyShortClick:<n>` (fire preset n), `getAllRoutines` and
+`getStatusEx` (preset details, see **Presets**). Presets and recently played also use the
+WiiM's UPnP `PlayQueue` service (plain HTTP on port 49152): `GetKeyMapping`, `BrowseQueue`,
+`CreateQueue`, `PlayQueueWithIndex`.
 
-All WiiM networking runs on its own FreeRTOS task (`src/wiim/WiimTask.cpp`), pinned away from
-the core that drives the display/touch/knob loop — a button press just drops a message in a
-queue and returns immediately, so a slow or stalled network call can't freeze the UI. That
-task also owns the one long-lived `WiFiClientSecure`/`HTTPClient` pair a `WiimClient` keeps
-open across calls (see the big comment in `WiimClient.h`): **both** objects have to be
+All WiiM networking runs on two FreeRTOS tasks (`src/wiim/WiimTask.cpp`), pinned away from the
+core that drives the display/touch/knob loop, so a slow or stalled network call can't freeze
+the UI. One task only sends what you just did (buttons, presets, albums, volume) and polls
+play state; everything slow (metadata, album art download, saving recently played albums,
+refreshing presets) runs on the other. With a single task, a tap could sit queued behind a
+multi-second album art download.
+
+Two things about the connection itself:
+
+- **Keep it open, and retry once.** A fresh TLS handshake costs 400-700ms on this CPU, so each
+  task keeps a long-lived `WiFiClientSecure`/`HTTPClient` pair open across calls. The WiiM's
+  web server drops idle keep-alive connections after ~5-10s, and a request that hits a
+  just-closed one fails before the WiiM ever sees it, so those get retried once on a fresh
+  connection. The command task's status poll (every 1.2s) is also what keeps its connection
+  warm.
+- **Only two TLS sessions at a time.** Each one pins ~40KB of internal RAM (this framework
+  build can't put mbedTLS buffers in PSRAM). The background task closes its own connection
+  before downloading album art, which needs a third.
+
+On reuse (see the big comment in `WiimClient.h`): **both** objects have to be
 persistent, not just the socket. `HTTPClient`'s destructor unconditionally closes its
 connection, so a fresh `HTTPClient` per call — even one that reuses the same
 `WiFiClientSecure` — silently undid the keep-alive every time; every request paid a full TLS
 handshake (measured at 400-700ms on this CPU) instead of the ~15-45ms a genuinely reused
 connection costs. That was the actual cause of the multi-second lag on volume/prev/next/pause
 in early versions of this firmware, not the network or the WiiM itself.
+
+## Presets
+
+The WiiM's own `getPresetInfo` reports zero presets on this firmware generation: presets are
+now "routines", lists of steps (switch input, switch output, load an EQ, set the subwoofer)
+stored on the device. The presets screen reads which routine sits in each slot (UPnP
+`GetKeyMapping`), joins that with the routine definitions (`getAllRoutines`), and labels each
+tile by what it does: input first (`line-in`, or `ethernet`/`wi-fi` for network streaming,
+depending on how the WiiM is connected), then a USB DAC output, otherwise just `EQ`. Tapping a
+tile sends `MCUKeyShortClick:<slot>`, the same as pressing it in the WiiM Home app.
+
+The list is read at boot and refreshed every 5 minutes, so edits in the app show up on their
+own. The WiiM doesn't store preset artwork locally and doesn't report which preset is in
+effect, so the red border marks the last preset fired from the knob, not the "active" one.
+
+## Recently played
+
+The WiiM Home app's recently played list lives in WiiM's cloud, not on the device, so the
+knob keeps its own. Whenever a new album starts playing from a queue on the WiiM, the knob
+saves a copy of that queue (`BrowseQueue`) plus a 68px thumbnail to flash (LittleFS, on the
+`spiffs` partition), so the list survives deep sleep and reboots. Tapping a thumbnail hands the
+saved queue back (`CreateQueue`) and starts it from the first track (`PlayQueueWithIndex`).
+`ReplaceQueue` looks like the right call but only swaps a queue that's already loaded, so it
+silently restarted the current album instead.
+
+Limits worth knowing:
+
+- **Only sources that play from a queue on the WiiM show up**: albums started from the WiiM
+  Home app (Plex, Qobuz, etc.). Connect-style sources (Qobuz Connect, Spotify Connect, TIDAL
+  Connect, AirPlay) stream from another app with no device-side queue, so there's nothing to
+  save or replay.
+- **Streaming links can expire.** Qobuz stream URLs in a saved queue carry an expiry time
+  (hours out); Plex links point at your own server and don't. An old Qobuz entry may fail to
+  replay.
+- **Saved queues include whatever the WiiM had in them**, which for Plex includes the server's
+  access token. They stay in the knob's flash and are never logged.
 
 ## Power management
 
@@ -170,6 +228,11 @@ estimate, raw voltage) — it's been folded into the single gauge on the control
 4. Open the serial monitor (`pio device monitor`) to watch it connect to Wi-Fi and start
    polling.
 
+   If upload fails with "This chip is ESP32, not ESP32-S3", the cable orientation reached the
+   board's other microcontroller (nothing gets written): flip the USB-C plug at the board. If
+   it fails with "No serial data received", the board is probably in deep sleep or stuck:
+   unplug, hold **BOOT**, plug back in, release.
+
 If the screen stays dark or PSRAM isn't detected at boot, check `platformio.ini`'s
 `board_build.arduino.memory_type` / `board_build.psram_type` against what `esptool.py
 flash_id` reports for your specific board revision — these straps are inferred from the
@@ -189,9 +252,11 @@ src/
   haptics/          DRV2605L LRA haptic feedback
   input/            knob (pulse decoding) and touch (CST816D) drivers
   power/            screen-timeout + deep-sleep idle management, battery estimate
-  wiim/             WiiM HTTP API client + album art JPEG fetch/decode
-  ui/                the two-screen LVGL layout (ambient + controls) and gesture navigation
-    fonts/            regenerated fonts with accented-character support, see Fonts above
+  wiim/             WiiM HTTP/UPnP client, the two network tasks, album art JPEG
+                    fetch/decode, and the recently played history
+  ui/               the four-screen LVGL layout and gesture navigation
+    fonts/            regenerated fonts with accented-character support (see Fonts above),
+                      plus a small icon font for the preset tiles
 ```
 
 ## Ideas for next steps
@@ -205,6 +270,9 @@ src/
 - **Charging detection is a voltage-trend guess** (see the Battery gauge section) because this
   board has no confirmed charger-status pin. If you find one by probing the charge IC directly,
   wiring it to a GPIO and reading it would be far more reliable than the current heuristic.
+- **Play/pause state for Connect sources**: Qobuz Connect reports its status as "none"
+  whether playing or paused, so the knob infers it from whether the track position is moving
+  (the icon catches up ~2s after pausing). Other Connect sources may behave the same way.
 - **Wider Unicode coverage**: the regenerated fonts (see Fonts above) cover Western/Central
   European accents but not Cyrillic, Greek, or CJK — extend the `lv_font_conv` range if you
   need those.

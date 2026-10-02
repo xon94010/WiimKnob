@@ -19,5 +19,12 @@ bool fetch(const String &url);
 // The most recently decoded image, or nullptr if none has been fetched yet.
 const lv_img_dsc_t *descriptor();
 
+// URL of the image descriptor() currently holds (empty if none).
+const String &currentUrl();
+
+// Box-filters a center square crop of the current image down to size x size RGB565 into dst.
+// Returns false if there's no image yet. Call from the same task as fetch().
+bool makeThumbnail(uint16_t *dst, int size);
+
 } // namespace albumart
 } // namespace wiim

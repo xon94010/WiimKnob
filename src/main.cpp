@@ -21,6 +21,9 @@ input::Touch touch;
 int localVolume = 0;
 uint32_t lastKnobActivityMs = 0;
 uint32_t lastSeenMetaVersion = 0;
+uint32_t lastSeenPresetsVersion = 0;
+uint32_t lastSeenRecentVersion = 0;
+uint32_t lastRecentMetaVersion = 0;
 uint32_t lastBatteryPollMs = 0;
 
 void touchReadCb(lv_indev_drv_t *drv, lv_indev_data_t *data) {
@@ -47,6 +50,85 @@ void onNext() {
 void onPlayPause() {
   wiim::task::requestTogglePause();
   haptics::buzz();
+}
+void onPreset(int key) {
+  wiim::task::requestPreset(key);
+  haptics::buzz();
+}
+void onRecent(int slot) {
+  wiim::task::requestRecent(slot);
+  haptics::buzz();
+}
+
+// Describes a preset by what its routine changes, since that's all the WiiM stores about it
+// (no artwork): input first, then a USB DAC output, else just "EQ".
+void describePreset(const wiim::Preset &p, bool wiimOnEthernet, String &subtitle, ui::PresetIcon &icon) {
+  if (p.input == "wifi") {
+    subtitle = wiimOnEthernet ? "ethernet" : "wi-fi"; // "wifi" here means network streaming
+  } else {
+    subtitle = p.input;
+  }
+  if (p.usbOutput) {
+    // U+2022 bullet: one of the few non-ASCII glyphs the stock montserrat_14 includes. Kept
+    // short -- "ethernet • USB DAC" doesn't fit a tile's width.
+    subtitle += subtitle.length() ? " \xE2\x80\xA2 USB" : "USB DAC";
+  }
+  if (subtitle.length() == 0) {
+    subtitle = p.changesEq ? "EQ" : "routine";
+  }
+
+  if (p.usbOutput) {
+    icon = ui::PresetIcon::kHeadphones;
+  } else if (p.input.length() && p.input != "wifi") {
+    icon = ui::PresetIcon::kDisc; // a physical input: turntable, CD, ...
+  } else if (p.input.length() == 0 && p.changesEq) {
+    icon = ui::PresetIcon::kEq;
+  } else {
+    icon = ui::PresetIcon::kMusic;
+  }
+}
+
+// Rebuilt when the saved list changes, and on every track change too so the red ring follows
+// whichever album is actually playing.
+void syncRecent() {
+  uint32_t version = wiim::task::recentVersion();
+  uint32_t metaVersion = wiim::task::metadataVersion();
+  if (version == lastSeenRecentVersion && metaVersion == lastRecentMetaVersion) {
+    return;
+  }
+  lastSeenRecentVersion = version;
+  lastRecentMetaVersion = metaVersion;
+
+  wiim::recent::List list = wiim::task::getRecent();
+  wiim::TrackMetadata meta = wiim::task::getMetadata();
+  ui::RecentTile tiles[wiim::recent::kMaxAlbums];
+  for (int i = 0; i < list.count; i++) {
+    const wiim::recent::Entry &e = list.items[i];
+    tiles[i].id = e.slot;
+    tiles[i].thumb = wiim::task::getRecentThumbnail(e.slot);
+    tiles[i].playing = e.album == meta.album && e.artist == meta.artist;
+  }
+  ui::setRecent(tiles, list.count);
+}
+
+void syncPresets() {
+  uint32_t version = wiim::task::presetsVersion();
+  if (version == lastSeenPresetsVersion) {
+    return;
+  }
+  lastSeenPresetsVersion = version;
+
+  wiim::PresetList list = wiim::task::getPresets();
+  String subtitles[wiim::kMaxPresets];
+  ui::PresetTile tiles[wiim::kMaxPresets];
+  for (int i = 0; i < list.count; i++) {
+    const wiim::Preset &p = list.items[i];
+    tiles[i].key = p.key;
+    tiles[i].name = p.name.c_str();
+    describePreset(p, list.wiimOnEthernet, subtitles[i], tiles[i].icon);
+    tiles[i].subtitle = subtitles[i].c_str();
+  }
+  ui::setPresets(tiles, list.count);
 }
 
 void connectWiFi() {
@@ -119,7 +201,7 @@ void setup() {
 
   display::begin();
 
-  ui::Callbacks callbacks = {onPrev, onNext, onPlayPause};
+  ui::Callbacks callbacks = {onPrev, onNext, onPlayPause, onPreset, onRecent};
   ui::begin(callbacks);
 
   static lv_indev_drv_t indevDrv;
@@ -153,6 +235,8 @@ void loop() {
   }
   serviceKnob();
   syncUiFromWiimTask();
+  syncPresets();
+  syncRecent();
   serviceBattery();
   power::service();
 

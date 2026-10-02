@@ -1,5 +1,6 @@
 #pragma once
 
+#include "RecentAlbums.h"
 #include "WiimClient.h"
 
 #include <lvgl.h>
@@ -20,6 +21,8 @@ void begin();
 void requestNext();
 void requestPrevious();
 void requestTogglePause();
+void requestPreset(int key); // 1-based preset slot
+void requestRecent(int slot); // recent::Entry::slot -- replays that saved album
 
 // Non-blocking: only the latest value before each send matters, so rapid knob turns collapse
 // into a handful of network calls instead of one per detent.
@@ -34,6 +37,15 @@ const lv_img_dsc_t *getAlbumArt();
 // Bumped whenever title/artist/album art changes. Compare against a value you saved from a
 // previous call to know whether it's worth re-reading getMetadata()/getAlbumArt().
 uint32_t metadataVersion();
+
+// Same pattern for the preset list: refreshed at startup and every few minutes after.
+PresetList getPresets();
+uint32_t presetsVersion();
+
+// And for recently played albums (most recent first), saved whenever a new album starts.
+recent::List getRecent();
+const lv_img_dsc_t *getRecentThumbnail(int slot); // nullptr if that album had no art
+uint32_t recentVersion();
 
 } // namespace task
 } // namespace wiim

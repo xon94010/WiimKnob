@@ -8,6 +8,8 @@
 // up; the icon buttons and the volume number stay on the stock fonts.
 LV_FONT_DECLARE(lv_font_montserrat_20_latin);
 LV_FONT_DECLARE(lv_font_montserrat_16_latin);
+// Just the four FontAwesome glyphs the preset tiles use -- see the header of the .c file.
+LV_FONT_DECLARE(lv_font_preset_icons_26);
 
 namespace ui {
 
@@ -15,24 +17,28 @@ namespace {
 
 Callbacks callbacks;
 
-// Red is reserved for "this is adjustable/live": the volume ring and a highlight on
-// play/pause. Everything else is neutral (dark badges, white icons) per the reference look.
+// Red is reserved for "this is adjustable/live": the volume ring, plus the "last tapped"
+// markers on the presets/recent screens. Everything else is neutral (dark badges, white icons)
+// per the reference look.
 constexpr uint32_t kAccentColor = 0xE53935;
 constexpr uint32_t kButtonColor = 0x2a2a2a;
 constexpr uint32_t kBadgeColor = 0x333333;
 constexpr uint32_t kBatteryGreen = 0x639922;
 
-constexpr int kNowPlaying = 0;
-constexpr int kControls = 1;
-constexpr int kScreenCount = 2;
+// Swipe order, left to right. Boots on the controls screen.
+constexpr int kControls = 0;
+constexpr int kNowPlaying = 1;
+constexpr int kRecent = 2;
+constexpr int kPresets = 3;
+constexpr int kScreenCount = 4;
 
 lv_obj_t *screens[kScreenCount];
-int activeScreen = kNowPlaying;
+int activeScreen = kControls;
 
-// Screen 0: now playing (ambient) -- just the art, nothing else.
+// Now playing (ambient) -- just the art, nothing else.
 lv_obj_t *artImgAmbient = nullptr;
 
-// Screen 1: controls.
+// Controls.
 lv_obj_t *artImgControls = nullptr; // lives inside a circular-clipped container, see begin()
 lv_obj_t *volumeArc = nullptr;
 lv_obj_t *volumeLabel = nullptr;
@@ -47,6 +53,20 @@ lv_obj_t *batteryFill = nullptr;
 lv_obj_t *batteryPercentLabel = nullptr;
 bool batteryChargingAnimRunning = false;
 bool showingBatteryPercent = false;
+
+// Recently played.
+constexpr int kMaxRecentTiles = 10;
+constexpr int kRecentThumbSize = 68;
+lv_obj_t *recentTiles[kMaxRecentTiles] = {};
+int recentTileCount = 0;
+lv_obj_t *recentEmptyLabel = nullptr;
+
+// Presets.
+lv_obj_t *presetGrid = nullptr;
+lv_obj_t *presetEmptyLabel = nullptr;
+lv_obj_t *lastFiredTile = nullptr; // red border: last preset fired from here, not "active" --
+                                   // the WiiM doesn't report which preset is currently in effect
+int lastFiredKey = 0;               // survives a grid rebuild
 
 constexpr int kArtInsetSize = 160;
 constexpr int kBattIconW = 32, kBattIconH = 18;
@@ -135,20 +155,14 @@ lv_obj_t *makeBadge(lv_obj_t *parent, int size, int xOffset, int yOffset) {
 }
 
 // A borderless hit target sitting on the transparent control bar -- not a visible round
-// button, just an icon plus enough tappable area around it. `highlighted` draws a thin ring
-// (play/pause only).
-lv_obj_t *makeBarIcon(lv_obj_t *bar, int xOffset, const char *symbol, lv_event_cb_t cb, bool highlighted,
+// button, just an icon plus enough tappable area around it.
+lv_obj_t *makeBarIcon(lv_obj_t *bar, int xOffset, const char *symbol, lv_event_cb_t cb,
                       lv_obj_t **iconOut = nullptr) {
   lv_obj_t *hit = lv_obj_create(bar);
   lv_obj_set_size(hit, 44, 44);
   lv_obj_set_style_radius(hit, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_bg_opa(hit, LV_OPA_TRANSP, 0);
-  if (highlighted) {
-    lv_obj_set_style_border_width(hit, 2, 0);
-    lv_obj_set_style_border_color(hit, lv_color_hex(kAccentColor), 0);
-  } else {
-    lv_obj_set_style_border_width(hit, 0, 0);
-  }
+  lv_obj_set_style_border_width(hit, 0, 0);
   lv_obj_align(hit, LV_ALIGN_CENTER, xOffset, 0);
   lv_obj_clear_flag(hit, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_flag(hit, LV_OBJ_FLAG_GESTURE_BUBBLE); // a swipe starting here still changes screens
@@ -181,6 +195,105 @@ void setArtOn(lv_obj_t *img, const lv_img_dsc_t *art, int coverSize) {
 
 void batteryPulseAnimCb(void *var, int32_t v) { lv_obj_set_style_bg_opa((lv_obj_t *)var, v, 0); }
 
+void markLastFired(lv_obj_t *tile) {
+  if (lastFiredTile) {
+    lv_obj_set_style_border_color(lastFiredTile, lv_color_black(), 0);
+    lv_obj_set_style_border_opa(lastFiredTile, LV_OPA_TRANSP, 0);
+  }
+  lastFiredTile = tile;
+  if (tile) {
+    lv_obj_set_style_border_color(tile, lv_color_hex(kAccentColor), 0);
+    lv_obj_set_style_border_opa(tile, LV_OPA_COVER, 0);
+  }
+}
+
+void onPresetClicked(lv_event_t *e) {
+  // LVGL still sends CLICKED on release after a swipe that started on a tile -- don't let
+  // swiping between screens fire a preset (which can switch inputs/outputs).
+  lv_indev_t *indev = lv_indev_get_act();
+  if (indev && lv_indev_get_gesture_dir(indev) != LV_DIR_NONE) {
+    return;
+  }
+  lv_obj_t *tile = lv_event_get_current_target(e);
+  int key = (int)(intptr_t)lv_event_get_user_data(e);
+  lastFiredKey = key;
+  markLastFired(tile);
+  if (callbacks.onPreset) callbacks.onPreset(key);
+}
+
+void setRecentRing(lv_obj_t *tile, bool on) {
+  lv_obj_set_style_outline_opa(tile, on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+}
+
+void onRecentClicked(lv_event_t *e) {
+  lv_indev_t *indev = lv_indev_get_act();
+  if (indev && lv_indev_get_gesture_dir(indev) != LV_DIR_NONE) {
+    return; // the tail end of a swipe, not a tap -- see onPresetClicked
+  }
+  lv_obj_t *tile = lv_event_get_current_target(e);
+  // Move the ring right away; the real "now playing" state catches up once the WiiM reports it.
+  for (int i = 0; i < recentTileCount; i++) {
+    setRecentRing(recentTiles[i], recentTiles[i] == tile);
+  }
+  if (callbacks.onRecent) callbacks.onRecent((int)(intptr_t)lv_event_get_user_data(e));
+}
+
+const char *presetIconGlyph(PresetIcon icon) {
+  switch (icon) {
+  case PresetIcon::kDisc:
+    return "\xEF\x94\x9F"; // U+F51F compact-disc
+  case PresetIcon::kHeadphones:
+    return "\xEF\x80\xA5"; // U+F025 headphones
+  case PresetIcon::kEq:
+    return "\xEF\x87\x9E"; // U+F1DE sliders-h
+  case PresetIcon::kMusic:
+  default:
+    return "\xEF\x80\x81"; // U+F001 music
+  }
+}
+
+lv_obj_t *makePresetTile(lv_obj_t *grid, const PresetTile &p) {
+  lv_obj_t *tile = lv_obj_create(grid);
+  lv_obj_set_size(tile, 120, 104);
+  lv_obj_set_style_radius(tile, 16, 0);
+  lv_obj_set_style_bg_color(tile, lv_color_white(), 0);
+  lv_obj_set_style_bg_opa(tile, LV_OPA_10, 0);
+  lv_obj_set_style_bg_opa(tile, LV_OPA_20, LV_STATE_PRESSED);
+  lv_obj_set_style_border_width(tile, 2, 0);
+  lv_obj_set_style_border_opa(tile, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_pad_all(tile, 4, 0);
+  lv_obj_set_style_pad_row(tile, 2, 0);
+  lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(tile, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_add_event_cb(tile, onPresetClicked, LV_EVENT_CLICKED, (void *)(intptr_t)p.key);
+
+  lv_obj_t *icon = lv_label_create(tile);
+  lv_label_set_text(icon, presetIconGlyph(p.icon));
+  lv_obj_set_style_text_font(icon, &lv_font_preset_icons_26, 0);
+  lv_obj_set_style_text_color(icon, lv_color_white(), 0);
+
+  lv_obj_t *name = lv_label_create(tile);
+  lv_obj_set_width(name, 110);
+  lv_label_set_long_mode(name, LV_LABEL_LONG_WRAP); // "Headphone Mode" needs two lines
+  lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_font(name, &lv_font_montserrat_16_latin, 0);
+  lv_obj_set_style_text_color(name, lv_color_white(), 0);
+  lv_label_set_text(name, p.name);
+
+  lv_obj_t *sub = lv_label_create(tile);
+  lv_obj_set_width(sub, 110);
+  lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
+  lv_obj_set_style_text_align(sub, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_font(sub, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(sub, lv_color_hex(0xb4b2a9), 0);
+  lv_label_set_text(sub, p.subtitle);
+
+  if (p.key == lastFiredKey) markLastFired(tile);
+  return tile;
+}
+
 } // namespace
 
 void begin(const Callbacks &cbs) {
@@ -193,13 +306,13 @@ void begin(const Callbacks &cbs) {
     lv_obj_add_event_cb(screens[i], onGesture, LV_EVENT_GESTURE, NULL);
   }
 
-  // ---- Screen 0: now playing ----
+  // ---- Now playing ----
   artImgAmbient = lv_img_create(screens[kNowPlaying]);
   lv_obj_center(artImgAmbient);
   lv_obj_add_flag(artImgAmbient, LV_OBJ_FLAG_HIDDEN);
   makePageDots(screens[kNowPlaying], kNowPlaying);
 
-  // ---- Screen 1: controls ----
+  // ---- Controls ----
   lv_obj_t *ctrl = screens[kControls];
 
   lv_obj_t *artInset = lv_obj_create(ctrl);
@@ -335,13 +448,143 @@ void begin(const Callbacks &cbs) {
   lv_obj_clear_flag(controlBar, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_flag(controlBar, LV_OBJ_FLAG_GESTURE_BUBBLE);
 
-  makeBarIcon(controlBar, -66, LV_SYMBOL_PREV, onPrevClicked, false);
-  makeBarIcon(controlBar, 0, LV_SYMBOL_PLAY, onPlayPauseClicked, true, &playPauseIcon);
-  makeBarIcon(controlBar, 66, LV_SYMBOL_NEXT, onNextClicked, false);
+  makeBarIcon(controlBar, -66, LV_SYMBOL_PREV, onPrevClicked);
+  makeBarIcon(controlBar, 0, LV_SYMBOL_PLAY, onPlayPauseClicked, &playPauseIcon);
+  makeBarIcon(controlBar, 66, LV_SYMBOL_NEXT, onNextClicked);
 
   makePageDots(ctrl, kControls);
 
-  lv_scr_load(screens[kNowPlaying]);
+  // ---- Recently played ----
+  lv_obj_t *rec = screens[kRecent];
+
+  lv_obj_t *recentTitle = lv_label_create(rec);
+  lv_obj_set_style_text_font(recentTitle, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(recentTitle, lv_color_hex(0xb4b2a9), 0);
+  lv_label_set_text(recentTitle, "Recently played");
+  lv_obj_align(recentTitle, LV_ALIGN_TOP_MID, 0, 46);
+
+  lv_obj_t *recentHint = lv_label_create(rec);
+  lv_obj_set_style_text_font(recentHint, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(recentHint, lv_color_hex(0x707070), 0);
+  lv_label_set_text(recentHint, "Tap to play");
+  lv_obj_align(recentHint, LV_ALIGN_BOTTOM_MID, 0, -50);
+
+  recentEmptyLabel = lv_label_create(rec);
+  lv_obj_set_width(recentEmptyLabel, 220);
+  lv_label_set_long_mode(recentEmptyLabel, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_align(recentEmptyLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_font(recentEmptyLabel, &lv_font_montserrat_16_latin, 0);
+  lv_obj_set_style_text_color(recentEmptyLabel, lv_color_hex(0xa0a0a0), 0);
+  lv_label_set_text(recentEmptyLabel, "Albums you play will show up here");
+  lv_obj_center(recentEmptyLabel);
+
+  makePageDots(rec, kRecent);
+
+  // ---- Presets ----
+  lv_obj_t *pres = screens[kPresets];
+
+  lv_obj_t *presetsTitle = lv_label_create(pres);
+  lv_obj_set_style_text_font(presetsTitle, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(presetsTitle, lv_color_hex(0xb4b2a9), 0);
+  lv_label_set_text(presetsTitle, "Presets");
+  lv_obj_align(presetsTitle, LV_ALIGN_TOP_MID, 0, 34);
+
+  // Two columns of tiles; scrolls vertically if more than four presets are set up. Only
+  // vertical scrolling, so a horizontal swipe still reaches the screen's gesture handler.
+  presetGrid = lv_obj_create(pres);
+  lv_obj_set_size(presetGrid, 254, 222);
+  lv_obj_align(presetGrid, LV_ALIGN_TOP_MID, 0, 62);
+  lv_obj_set_style_bg_opa(presetGrid, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(presetGrid, 0, 0);
+  lv_obj_set_style_pad_all(presetGrid, 2, 0);
+  lv_obj_set_style_pad_gap(presetGrid, 10, 0);
+  lv_obj_set_flex_flow(presetGrid, LV_FLEX_FLOW_ROW_WRAP);
+  lv_obj_set_flex_align(presetGrid, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+  lv_obj_set_scroll_dir(presetGrid, LV_DIR_VER);
+  lv_obj_set_scrollbar_mode(presetGrid, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_add_flag(presetGrid, LV_OBJ_FLAG_GESTURE_BUBBLE);
+
+  presetEmptyLabel = lv_label_create(pres);
+  lv_obj_set_width(presetEmptyLabel, 220);
+  lv_label_set_long_mode(presetEmptyLabel, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_align(presetEmptyLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_font(presetEmptyLabel, &lv_font_montserrat_16_latin, 0);
+  lv_obj_set_style_text_color(presetEmptyLabel, lv_color_hex(0xa0a0a0), 0);
+  lv_label_set_text(presetEmptyLabel, "Loading presets...");
+  lv_obj_center(presetEmptyLabel);
+
+  makePageDots(pres, kPresets);
+
+  lv_scr_load(screens[kControls]);
+}
+
+void setRecent(const RecentTile *tiles, int count) {
+  // Rows of 3-4-3 centered on the circle; offsets from the screen center.
+  static const int8_t kPos[kMaxRecentTiles][2] = {
+      {-78, -72}, {0, -72}, {78, -72},
+      {-117, 0}, {-39, 0}, {39, 0}, {117, 0},
+      {-78, 72}, {0, 72}, {78, 72},
+  };
+  if (count > kMaxRecentTiles) count = kMaxRecentTiles;
+
+  for (int i = 0; i < recentTileCount; i++) {
+    lv_obj_del(recentTiles[i]);
+    recentTiles[i] = nullptr;
+  }
+  recentTileCount = count;
+
+  for (int i = 0; i < count; i++) {
+    lv_obj_t *tile = lv_obj_create(screens[kRecent]);
+    lv_obj_set_size(tile, kRecentThumbSize, kRecentThumbSize);
+    lv_obj_set_style_radius(tile, 12, 0);
+    lv_obj_set_style_clip_corner(tile, true, 0);
+    lv_obj_set_style_bg_color(tile, lv_color_hex(0x2a2a2a), 0);
+    lv_obj_set_style_border_width(tile, 0, 0);
+    lv_obj_set_style_pad_all(tile, 0, 0);
+    lv_obj_set_style_outline_width(tile, 2, 0);
+    lv_obj_set_style_outline_pad(tile, 2, 0);
+    lv_obj_set_style_outline_color(tile, lv_color_hex(kAccentColor), 0);
+    setRecentRing(tile, tiles[i].playing);
+    lv_obj_align(tile, LV_ALIGN_CENTER, kPos[i][0], kPos[i][1]);
+    lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(tile, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_event_cb(tile, onRecentClicked, LV_EVENT_CLICKED, (void *)(intptr_t)tiles[i].id);
+
+    if (tiles[i].thumb) {
+      lv_obj_t *img = lv_img_create(tile);
+      lv_img_set_src(img, tiles[i].thumb);
+      lv_obj_center(img);
+    }
+    recentTiles[i] = tile;
+  }
+
+  if (count == 0) {
+    lv_obj_clear_flag(recentEmptyLabel, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(recentEmptyLabel, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+void setPresets(const PresetTile *tiles, int count) {
+  lastFiredTile = nullptr; // about to be deleted with the rest of the grid's children
+  lv_obj_clean(presetGrid);
+  for (int i = 0; i < count; i++) {
+    makePresetTile(presetGrid, tiles[i]);
+  }
+  // Only scrollable when the tiles don't all fit. A scrollable container starts scrolling on
+  // ~10px of finger drift even with nothing to scroll to, and a scroll swallows the tap --
+  // which made taps on the touchscreen hit-or-miss.
+  if (count > 4) {
+    lv_obj_add_flag(presetGrid, LV_OBJ_FLAG_SCROLLABLE);
+  } else {
+    lv_obj_clear_flag(presetGrid, LV_OBJ_FLAG_SCROLLABLE);
+  }
+  if (count == 0) {
+    lv_label_set_text(presetEmptyLabel, "No presets set up in the WiiM Home app");
+    lv_obj_clear_flag(presetEmptyLabel, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(presetEmptyLabel, LV_OBJ_FLAG_HIDDEN);
+  }
 }
 
 void setTrack(const char *title, const char *artist) {

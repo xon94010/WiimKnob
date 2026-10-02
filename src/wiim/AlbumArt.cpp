@@ -99,7 +99,8 @@ bool ensureSmallCap(size_t neededBytes) {
 // fine detail into a shimmery mess. A box filter -- averaging the block of source pixels each
 // destination pixel covers -- looks meaningfully sharper for the same cost of one extra pass
 // over the source (each source pixel is visited once, no more).
-void boxDownscale(const uint16_t *src, int srcW, int srcH, uint16_t *dst, int dstW, int dstH) {
+// srcStride is the source's full row width in pixels, so this can also downscale a crop of it.
+void boxDownscale(const uint16_t *src, int srcStride, int srcW, int srcH, uint16_t *dst, int dstW, int dstH) {
   for (int dy = 0; dy < dstH; dy++) {
     int sy0 = dy * srcH / dstH;
     int sy1 = (dy + 1) * srcH / dstH;
@@ -111,7 +112,7 @@ void boxDownscale(const uint16_t *src, int srcW, int srcH, uint16_t *dst, int ds
 
       uint32_t rSum = 0, gSum = 0, bSum = 0, count = 0;
       for (int sy = sy0; sy < sy1; sy++) {
-        const uint16_t *row = &src[sy * srcW];
+        const uint16_t *row = &src[sy * srcStride];
         for (int sx = sx0; sx < sx1; sx++) {
           uint16_t px = row[sx];
           rSum += (px >> 11) & 0x1F;
@@ -237,7 +238,7 @@ bool fetch(const String &url) {
     int smallH = max(1, (int)(outH * scale));
     size_t smallBytes = (size_t)smallW * smallH * 2;
     if (ensureSmallCap(smallBytes)) {
-      boxDownscale(pixelBuf, outW, outH, smallBuf, smallW, smallH);
+      boxDownscale(pixelBuf, outW, outW, outH, smallBuf, smallW, smallH);
       finalBuf = smallBuf;
       finalW = smallW;
       finalH = smallH;
@@ -258,6 +259,21 @@ bool fetch(const String &url) {
 }
 
 const lv_img_dsc_t *descriptor() { return desc.data ? &desc : nullptr; }
+
+const String &currentUrl() { return lastUrl; }
+
+bool makeThumbnail(uint16_t *dst, int size) {
+  if (!desc.data) {
+    return false;
+  }
+  // Center square crop, so non-square covers fill the tile the same way the art inset does.
+  int w = desc.header.w, h = desc.header.h;
+  int side = min(w, h);
+  const uint16_t *src = (const uint16_t *)desc.data;
+  const uint16_t *crop = &src[((h - side) / 2) * w + (w - side) / 2];
+  boxDownscale(crop, w, side, side, dst, size, size);
+  return true;
+}
 
 } // namespace albumart
 } // namespace wiim
