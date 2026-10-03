@@ -34,9 +34,14 @@ This is a first working version, not a finished product — see **Ideas for next
 
 <table>
 <tr>
-<td><img src="docs/screenshot-controls.jpg" width="260" alt="Controls screen: album art, volume badge, battery icon, title/artist, and the prev/play-pause/next pill"></td>
-<td><img src="docs/screenshot-angle.jpg" width="260" alt="Controls screen viewed at an angle, showing the physical knob and case"></td>
-<td><img src="docs/screenshot-now-playing.jpg" width="260" alt="Now playing screen: full-screen album art with nothing else overlaid"></td>
+<td align="center"><img src="docs/screenshot-controls.jpg" width="260" alt="Controls screen: circular album art, volume badge, battery icon, title/artist, prev/play-pause/next pill, red volume ring"><br><sub>1. Controls</sub></td>
+<td align="center"><img src="docs/screenshot-now-playing.jpg" width="260" alt="Now playing screen: full-screen album art"><br><sub>2. Now playing</sub></td>
+<td align="center"><img src="docs/screenshot-volume.jpg" width="260" alt="Now playing screen while turning the knob: big volume number with a red ring over the album art"><br><sub>2. Turning the knob</sub></td>
+</tr>
+<tr>
+<td align="center"><img src="docs/screenshot-recent.jpg" width="260" alt="Recently played screen: album thumbnails in rows, tap to play"><br><sub>3. Recently played</sub></td>
+<td align="center"><img src="docs/screenshot-presets.jpg" width="260" alt="Presets screen: Turntable, Headphone Mode, Jazz and Wiim Amp Ultra tiles"><br><sub>4. Presets</sub></td>
+<td align="center"><img src="docs/screenshot-angle.jpg" width="260" alt="The knob viewed at an angle, showing the physical case"><br><sub>The hardware</sub></td>
 </tr>
 </table>
 
