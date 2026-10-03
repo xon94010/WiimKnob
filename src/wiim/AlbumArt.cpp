@@ -23,7 +23,12 @@ size_t pixelCap = 0; // bytes
 // boxDownscale() below for why this exists instead of just letting LVGL's zoom handle it.
 uint16_t *smallBuf = nullptr;
 size_t smallCap = 0; // bytes
-constexpr int kWorkingSize = 300;
+// Shorter side of the final image: the full screen width, so the full-screen art page draws it
+// 1:1. Anything else means LVGL scales it in software on every redraw -- slow enough over a
+// full-screen image that a big volume readout on top of it couldn't keep up with fast knob
+// turns. The small circular inset on the controls page still scales it down, but over far
+// fewer pixels.
+constexpr int kWorkingSize = 360;
 
 lv_img_dsc_t desc = {};
 String lastUrl;
@@ -190,16 +195,18 @@ bool fetch(const String &url) {
   int srcW = jpeg.getWidth();
   int srcH = jpeg.getHeight();
 
+  // Biggest power-of-two JPEG downscale that still leaves the shorter side at least
+  // kWorkingSize, so the box filter below finishes the job without ever upscaling.
   int divisor = 1;
   int scaleFlag = 0;
-  int longest = max(srcW, srcH);
-  if (longest > 1200) {
+  int shortest = min(srcW, srcH);
+  if (shortest / 8 >= kWorkingSize) {
     divisor = 8;
     scaleFlag = JPEG_SCALE_EIGHTH;
-  } else if (longest > 600) {
+  } else if (shortest / 4 >= kWorkingSize) {
     divisor = 4;
     scaleFlag = JPEG_SCALE_QUARTER;
-  } else if (longest > 300) {
+  } else if (shortest / 2 >= kWorkingSize) {
     divisor = 2;
     scaleFlag = JPEG_SCALE_HALF;
   }
@@ -231,9 +238,9 @@ bool fetch(const String &url) {
   const uint16_t *finalBuf = pixelBuf;
   int finalW = outW;
   int finalH = outH;
-  int decodedLongest = max(outW, outH);
-  if (decodedLongest > kWorkingSize) {
-    float scale = (float)kWorkingSize / decodedLongest;
+  int decodedShortest = min(outW, outH);
+  if (decodedShortest > kWorkingSize) {
+    float scale = (float)kWorkingSize / decodedShortest;
     int smallW = max(1, (int)(outW * scale));
     int smallH = max(1, (int)(outH * scale));
     size_t smallBytes = (size_t)smallW * smallH * 2;

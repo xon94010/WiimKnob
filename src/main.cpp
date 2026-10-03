@@ -12,6 +12,7 @@
 #include "ui/Ui.h"
 #include "wiim/WiimTask.h"
 
+
 namespace {
 
 constexpr uint32_t kBatteryPollMs = 5000;
@@ -131,6 +132,36 @@ void syncPresets() {
   ui::setPresets(tiles, list.count);
 }
 
+// Screen-off double tap: toggles play/pause without waking the screen. A single tap still
+// wakes it, just after the double-tap window has passed (it has to wait to see whether a
+// second tap is coming). LVGL isn't running while the screen is off, so this reads the touch
+// controller directly and does its own press-edge detection.
+constexpr uint32_t kScreenOffDoubleTapMs = 350;
+bool screenOffTouchDown = false;
+uint32_t screenOffPendingTapMs = 0; // 0 = no first tap waiting
+
+void serviceScreenOffTouch() {
+  int16_t x, y;
+  bool down = touch.read(x, y);
+  bool pressed = down && !screenOffTouchDown;
+  screenOffTouchDown = down;
+  uint32_t now = millis();
+
+  if (pressed) {
+    if (screenOffPendingTapMs != 0 && now - screenOffPendingTapMs <= kScreenOffDoubleTapMs) {
+      screenOffPendingTapMs = 0;
+      onPlayPause(); // buzzes, so there's feedback even with the screen dark
+    } else {
+      screenOffPendingTapMs = now ? now : 1;
+    }
+    return;
+  }
+  if (screenOffPendingTapMs != 0 && now - screenOffPendingTapMs > kScreenOffDoubleTapMs) {
+    screenOffPendingTapMs = 0;
+    power::noteActivity(); // just one tap: wake the screen as before
+  }
+}
+
 void connectWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -176,7 +207,11 @@ void serviceKnob() {
   power::noteActivity();
   localVolume = constrain(localVolume + delta * VOLUME_STEP_PER_DETENT, 0, 100);
   ui::setVolume(localVolume);
+  ui::flashVolume(localVolume);
   wiim::task::requestVolume(localVolume);
+  if (power::isScreenOn()) {
+    display::refreshNow(); // show this detent now, not on the next refresh tick
+  }
 }
 
 void serviceBattery() {
@@ -224,14 +259,13 @@ void setup() {
 void loop() {
   if (power::isScreenOn()) {
     display::tick(); // pumps LVGL, which reads touch via the indev callback above
+    screenOffTouchDown = true; // a finger still down as the screen times out isn't a new tap
+    screenOffPendingTapMs = 0;
   } else {
-    // LVGL isn't running, so nothing is calling touchReadCb -- poll directly just to notice a
-    // wake-worthy touch. The next loop() iteration resumes display::tick() as normal once
+    // LVGL isn't running, so nothing is calling touchReadCb -- poll directly for a wake tap or
+    // a double-tap. The next loop() iteration resumes display::tick() as normal once
     // noteActivity() turns the backlight back on.
-    int16_t x, y;
-    if (touch.read(x, y)) {
-      power::noteActivity();
-    }
+    serviceScreenOffTouch();
   }
   serviceKnob();
   syncUiFromWiimTask();

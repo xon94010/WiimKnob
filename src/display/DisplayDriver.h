@@ -11,6 +11,10 @@ void begin();
 // Pump LVGL's timer handler. Call every loop() iteration.
 void tick();
 
+// Draws pending UI changes right away instead of on LVGL's next refresh tick -- for input that
+// should show up with no extra delay (knob turns).
+void refreshNow();
+
 // Backlight brightness, 0-255.
 void setBacklight(uint8_t brightness);
 

@@ -64,6 +64,8 @@ void begin() {
 
 void tick() { lv_timer_handler(); }
 
+void refreshNow() { lv_refr_now(NULL); }
+
 void setBacklight(uint8_t brightness) {
   // Simple on/off for now -- see DisplayDriver.h if you want to add LEDC PWM dimming later.
   digitalWrite(PIN_LCD_BACKLIGHT, brightness > 0 ? HIGH : LOW);

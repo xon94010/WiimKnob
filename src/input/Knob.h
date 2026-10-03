@@ -6,6 +6,7 @@ namespace input {
 // detent (verified by tracing the raw pin states -- see
 // https://github.com/teetotum-rs/firmware/blob/main/docs/hardware/input.md, "The knob is not a
 // quadrature encoder"). GPIO8 pulsing low is one clockwise detent, GPIO7 one counter-clockwise.
+// Decoded by sampling the pin levels on a 1ms timer, not edge interrupts -- see Knob.cpp.
 namespace knob {
 
 void begin();

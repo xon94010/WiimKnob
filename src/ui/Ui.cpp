@@ -10,6 +10,8 @@ LV_FONT_DECLARE(lv_font_montserrat_20_latin);
 LV_FONT_DECLARE(lv_font_montserrat_16_latin);
 // Just the four FontAwesome glyphs the preset tiles use -- see the header of the .c file.
 LV_FONT_DECLARE(lv_font_preset_icons_26);
+// Digits 0-9 only, for the big volume readout on the full-screen art page.
+LV_FONT_DECLARE(lv_font_montserrat_96_digits);
 
 namespace ui {
 
@@ -35,8 +37,20 @@ constexpr int kScreenCount = 4;
 lv_obj_t *screens[kScreenCount];
 int activeScreen = kControls;
 
-// Now playing (ambient) -- just the art, nothing else.
+// Now playing (ambient) -- just the art, nothing else. Double-tap toggles play/pause.
 lv_obj_t *artImgAmbient = nullptr;
+lv_obj_t *ambientFlash = nullptr;      // big play/pause icon shown briefly on a double-tap
+lv_obj_t *ambientFlashIcon = nullptr;
+uint32_t lastAmbientTapMs = 0;
+lv_obj_t *ambientVolume = nullptr;      // big volume readout shown while turning the knob
+lv_obj_t *ambientVolumeArc = nullptr;
+lv_obj_t *ambientVolumeLabel = nullptr;
+uint32_t ambientVolumeLastMs = 0;    // last knob detent shown in the readout
+bool ambientVolumeFading = false;
+constexpr uint32_t kVolumeReadoutHoldMs = 1000;
+constexpr uint32_t kVolumeReadoutFadeMs = 400;
+constexpr uint32_t kDoubleTapWindowMs = 400;
+bool isPlaying = false;
 
 // Controls.
 lv_obj_t *artImgControls = nullptr; // lives inside a circular-clipped container, see begin()
@@ -108,6 +122,41 @@ void goToScreen(int index, bool forward) {
   lv_scr_load_anim(screens[index], forward ? LV_SCR_LOAD_ANIM_MOVE_LEFT : LV_SCR_LOAD_ANIM_MOVE_RIGHT,
                     220, 0, false);
   activeScreen = index;
+}
+
+void volumeReadoutTimerCb(lv_timer_t *) {
+  if (lv_obj_has_flag(ambientVolume, LV_OBJ_FLAG_HIDDEN)) return;
+  uint32_t idle = lv_tick_elaps(ambientVolumeLastMs);
+  if (!ambientVolumeFading && idle > kVolumeReadoutHoldMs) {
+    lv_obj_fade_out(ambientVolume, kVolumeReadoutFadeMs, 0);
+    ambientVolumeFading = true;
+  } else if (ambientVolumeFading && idle > kVolumeReadoutHoldMs + kVolumeReadoutFadeMs + 50) {
+    lv_obj_add_flag(ambientVolume, LV_OBJ_FLAG_HIDDEN);
+    ambientVolumeFading = false;
+  }
+}
+
+void onAmbientTapped(lv_event_t *e) {
+  (void)e;
+  lv_indev_t *indev = lv_indev_get_act();
+  if (indev && lv_indev_get_gesture_dir(indev) != LV_DIR_NONE) {
+    return; // end of a swipe to another screen, not a tap
+  }
+  uint32_t now = lv_tick_get();
+  if (lastAmbientTapMs == 0 || now - lastAmbientTapMs > kDoubleTapWindowMs) {
+    lastAmbientTapMs = now;
+    return;
+  }
+  lastAmbientTapMs = 0;
+
+  // Show what the tap is about to do (the real state catches up a poll later).
+  lv_label_set_text(ambientFlashIcon, isPlaying ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+  lv_anim_del(ambientFlash, NULL);
+  lv_obj_set_style_opa(ambientFlash, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(ambientFlash, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_fade_out(ambientFlash, 300, 500);
+
+  if (callbacks.onPlayPause) callbacks.onPlayPause();
 }
 
 void onGesture(lv_event_t *e) {
@@ -311,6 +360,60 @@ void begin(const Callbacks &cbs) {
   lv_obj_center(artImgAmbient);
   lv_obj_add_flag(artImgAmbient, LV_OBJ_FLAG_HIDDEN);
   makePageDots(screens[kNowPlaying], kNowPlaying);
+  // The art isn't clickable, so taps anywhere land on the screen itself. SHORT_CLICKED, not
+  // CLICKED, so a long press doesn't count as half of a double-tap.
+  lv_obj_add_event_cb(screens[kNowPlaying], onAmbientTapped, LV_EVENT_SHORT_CLICKED, NULL);
+
+  ambientFlash = lv_obj_create(screens[kNowPlaying]);
+  lv_obj_set_size(ambientFlash, 88, 88);
+  lv_obj_set_style_radius(ambientFlash, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(ambientFlash, lv_color_black(), 0);
+  lv_obj_set_style_bg_opa(ambientFlash, LV_OPA_60, 0);
+  lv_obj_set_style_border_width(ambientFlash, 0, 0);
+  lv_obj_center(ambientFlash);
+  lv_obj_clear_flag(ambientFlash, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(ambientFlash, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(ambientFlash, LV_OBJ_FLAG_HIDDEN);
+  // Volume readout, created before the double-tap icon so that one draws on top if both show.
+  ambientVolume = lv_obj_create(screens[kNowPlaying]);
+  lv_obj_set_size(ambientVolume, 210, 210);
+  lv_obj_set_style_radius(ambientVolume, LV_RADIUS_CIRCLE, 0);
+  // Opaque rather than see-through: blending a translucent circle over the art cost ~5ms of
+  // each ~20ms redraw (measured), the difference between ~36 and ~50 fps on a fast spin.
+  lv_obj_set_style_bg_color(ambientVolume, lv_color_hex(0x111111), 0);
+  lv_obj_set_style_bg_opa(ambientVolume, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(ambientVolume, 0, 0);
+  lv_obj_set_style_pad_all(ambientVolume, 0, 0);
+  lv_obj_center(ambientVolume);
+  lv_obj_clear_flag(ambientVolume, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(ambientVolume, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(ambientVolume, LV_OBJ_FLAG_HIDDEN);
+
+  ambientVolumeArc = lv_arc_create(ambientVolume);
+  lv_obj_set_size(ambientVolumeArc, 196, 196);
+  lv_obj_center(ambientVolumeArc);
+  lv_arc_set_bg_angles(ambientVolumeArc, 0, 360);
+  lv_arc_set_rotation(ambientVolumeArc, 270);
+  lv_arc_set_range(ambientVolumeArc, 0, 100);
+  lv_obj_remove_style(ambientVolumeArc, NULL, LV_PART_KNOB);
+  lv_obj_clear_flag(ambientVolumeArc, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_style_arc_width(ambientVolumeArc, 6, LV_PART_MAIN);
+  lv_obj_set_style_arc_width(ambientVolumeArc, 6, LV_PART_INDICATOR);
+  lv_obj_set_style_arc_color(ambientVolumeArc, lv_color_hex(0x3a3a3a), LV_PART_MAIN);
+  lv_obj_set_style_arc_color(ambientVolumeArc, lv_color_hex(kAccentColor), LV_PART_INDICATOR);
+
+  ambientVolumeLabel = lv_label_create(ambientVolume);
+  lv_obj_set_style_text_font(ambientVolumeLabel, &lv_font_montserrat_96_digits, 0);
+  lv_obj_set_style_text_color(ambientVolumeLabel, lv_color_white(), 0);
+  lv_obj_center(ambientVolumeLabel);
+  lv_obj_move_foreground(ambientFlash);
+  // Fades the readout out once the knob has been still for a moment (see flashVolume()).
+  lv_timer_create(volumeReadoutTimerCb, 100, NULL);
+
+  ambientFlashIcon = lv_label_create(ambientFlash);
+  lv_obj_set_style_text_font(ambientFlashIcon, &lv_font_montserrat_24, 0);
+  lv_obj_set_style_text_color(ambientFlashIcon, lv_color_white(), 0);
+  lv_obj_center(ambientFlashIcon);
 
   // ---- Controls ----
   lv_obj_t *ctrl = screens[kControls];
@@ -598,15 +701,46 @@ void setAlbumArt(const lv_img_dsc_t *art) {
 }
 
 void setVolume(int volume0to100) {
+  static int last = -1;
+  if (last == volume0to100) return;
+  last = volume0to100;
   lv_arc_set_value(volumeArc, volume0to100);
   lv_label_set_text_fmt(volumeLabel, "%d", volume0to100);
 }
 
+void flashVolume(int volume0to100) {
+  if (activeScreen != kNowPlaying) {
+    return; // the controls page already shows volume; the others don't need it
+  }
+  ambientVolumeLastMs = lv_tick_get();
+  // Only the digits and the changed slice of the ring get redrawn per detent. Touching the
+  // readout's own opacity (as restarting a fade on every detent did) marks the whole 210px
+  // circle dirty instead -- measured at twice the redraw cost, which is what made fast knob
+  // turns lag. So the opacity is only reset when the readout is actually hidden or fading.
+  lv_arc_set_value(ambientVolumeArc, volume0to100);
+  lv_label_set_text_fmt(ambientVolumeLabel, "%d", volume0to100);
+  if (lv_obj_has_flag(ambientVolume, LV_OBJ_FLAG_HIDDEN) || ambientVolumeFading) {
+    lv_anim_del(ambientVolume, NULL);
+    lv_obj_set_style_opa(ambientVolume, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(ambientVolume, LV_OBJ_FLAG_HIDDEN);
+    ambientVolumeFading = false;
+  }
+}
+
+// These get called every loop() pass with whatever the WiiM last reported. Re-applying an
+// unchanged value still costs LVGL a text relayout or style refresh, so skip those.
 void setPlaying(bool playing) {
+  static int last = -1;
+  isPlaying = playing;
+  if (last == (int)playing) return;
+  last = playing;
   lv_label_set_text(playPauseIcon, playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
 }
 
 void setConnected(bool connected) {
+  static int last = -1;
+  if (last == (int)connected) return;
+  last = connected;
   lv_obj_set_style_bg_color(statusDot,
                              connected ? lv_palette_main(LV_PALETTE_GREEN) : lv_palette_main(LV_PALETTE_RED), 0);
 }

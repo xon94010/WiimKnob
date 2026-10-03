@@ -10,7 +10,8 @@ that turns it into a small WiiM remote:
 - Four swipeable screens, left to right:
   1. **Controls**: a circular art inset, title/artist, a transparent pill holding the
      prev/play-pause/next controls, a plain-number volume badge, and a battery-shaped gauge.
-  2. **Now playing**: full-screen album art, nothing else.
+  2. **Now playing**: full-screen album art. Turning the knob shows the volume in big digits
+     with a red ring (fades a second after you stop); double-tap anywhere to play/pause.
   3. **Recently played**: the last 10 albums as thumbnails (rows of 3-4-3). Tap one to play it
      again. See **Recently played** below.
   4. **Presets**: your WiiM Home presets as tiles, named and described by what each one does
@@ -22,7 +23,8 @@ that turns it into a small WiiM remote:
   while charging is detected.
 - Power-aware: the screen dims out after a short idle timeout (the knob still works while it's
   off, and LVGL itself stops redrawing to save CPU/SPI time), and the whole board deep-sleeps
-  after a longer one, waking on a touch or knob turn.
+  after a longer one, waking on a touch or knob turn. Double-tapping the dark screen
+  plays/pauses without waking it.
 - Handles accented/non-ASCII track and artist names correctly (see **Fonts** below) — the
   stock LVGL fonts only cover plain ASCII.
 
@@ -54,7 +56,9 @@ Two things worth knowing going in:
    This project only uses the ESP32-S3 side — we don't need the board's own audio output since
    WiiM is doing the actual audio playback.
 2. **The knob is not a quadrature encoder.** Each direction pulses its own GPIO low (one pulse
-   per detent) rather than two lines in quadrature. `src/input/Knob.cpp` decodes it accordingly.
+   per detent, 30 per revolution) rather than two lines in quadrature. `src/input/Knob.cpp`
+   decodes it by sampling the pin levels, not by counting edges -- see **Knob and screen
+   responsiveness** below for why.
 
 ## WiiM API
 
@@ -134,6 +138,37 @@ Limits worth knowing:
 - **Saved queues include whatever the WiiM had in them**, which for Plex includes the server's
   access token. They stay in the knob's flash and are never logged.
 
+## Knob and screen responsiveness
+
+Fast knob spins used to lag well behind the hand. Two separate causes, both measured on-device:
+
+- **The knob was losing detents.** The first decoder counted falling edges in a GPIO interrupt
+  with a 5ms per-line debounce. On a fast spin the edges ring, and both lines sometimes dip
+  together for a moment: logging showed ~85% of edges being discarded, and the both-low dips
+  counting as one clockwise *plus* one counter-clockwise detent, which cancel out. The decoder
+  now samples both pins every 1ms on an `esp_timer`, only trusts a level that's held for 2ms,
+  counts a detent when exactly one line is low after the knob was idle, ignores both-low, and
+  needs a return to idle before the next detent. (The community teardown saw the same thing:
+  edge counting gave 37-41 per revolution, polling the levels exactly 30.)
+- **Redraws were slow.** Measured with a simulated fast spin (a detent every 15ms on the
+  full-screen art page), the volume readout went from 21.5 fps with 86ms from detent to
+  screen, to ~43 fps and ~19ms. What made the difference:
+  - Restarting the readout's fade on every detent touched its opacity, which marks the whole
+    210px circle dirty. Now only the digits and the changed slice of the ring redraw, and a
+    timer starts the fade once the knob has been still for a second (this alone halved the
+    per-frame cost).
+  - A knob turn redraws immediately (`lv_refr_now`) instead of waiting for LVGL's next refresh
+    tick, and that tick is 15ms instead of 30ms.
+  - Album art is decoded at the screen's full 360px, so the full-screen page draws it 1:1
+    instead of software-scaling it on every redraw.
+  - The readout's circle is opaque: blending a translucent one over the art cost ~5ms of each
+    ~20ms frame.
+  - `loop()` re-applies the WiiM's play state, connection and volume every pass; the UI now
+    skips values that haven't changed instead of re-laying out text and refreshing styles.
+
+Things that measured as *not* worth it: moving LVGL's draw buffers from PSRAM to internal RAM
+(no gain), and the QSPI flush itself (~4.5ms of a frame).
+
 ## Power management
 
 Two independent timeouts, both configurable in `Config.h`, both reset by any touch or knob
@@ -142,7 +177,9 @@ turn:
 - **`SCREEN_TIMEOUT_S`** (default 30s): turns the backlight off. Everything else keeps running
   normally — WiFi stays connected, polling continues, and turning the knob still changes volume
   (and turns the backlight back on so you can see the new level). This tier only saves the
-  backlight's own draw.
+  backlight's own draw. While it's dark, a double-tap toggles play/pause (with a haptic buzz)
+  and leaves the screen off; a single tap wakes it, ~350ms later than it otherwise would,
+  since it has to wait to see whether a second tap is coming.
 - **`DEEP_SLEEP_TIMEOUT_MIN`** (default 10 min): puts the whole board into deep sleep, which cuts
   WiFi and the CPU too — the largest lever for battery life. A touch or knob turn wakes it by
   pulsing one of three GPIOs the chip watches for while asleep (see `src/power/Power.cpp`); no
@@ -161,7 +198,7 @@ enabled via GPIO38. Per the community research this project relies on for its pi
 answers on I2C regardless of that pin's state but its output stage stays off — and everything
 feels like no motor is attached — until GPIO38 is driven high. `src/haptics/Haptics.cpp` enables
 it, configures the driver for LRA playback (not the ERM default), and fires a short "click"
-effect on every prev/play-pause/next tap. It deliberately skips the DRV2605L's calibration
+effect on every prev/play-pause/next tap, preset or album tap, and double-tap play/pause. It deliberately skips the DRV2605L's calibration
 registers (rated voltage, overdrive clamp, auto-cal) — the ROM-library default felt effect
 works fine on this board without them, and getting those wrong is how you end up silently
 over-driving the actuator.
@@ -177,6 +214,10 @@ build uses, with the main range extended to cover Latin-1 Supplement and Latin E
 (`0x20-0x7F,0xA0-0x17F,0x2022`) — enough for French, German, Spanish, Nordic, Polish, Czech,
 and most other Western/Central European text. The exact `lv_font_conv` command is in each
 file's own header comment if you need to extend the range further (e.g. for Cyrillic or Greek).
+
+Two more generated fonts live alongside them: `lv_font_montserrat_96_digits` (just 0-9, for the
+big volume readout -- LVGL's built-in fonts stop at 48px) and `lv_font_preset_icons_26` (four
+FontAwesome glyphs for the preset tiles).
 
 ## Battery gauge
 
