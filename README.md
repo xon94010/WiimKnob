@@ -131,6 +131,12 @@ saved queue back (`CreateQueue`) and starts it from the first track (`PlayQueueW
 `ReplaceQueue` looks like the right call but only swaps a queue that's already loaded, so it
 silently restarted the current album instead.
 
+An album is identified by its title plus its main artist, worked out from the saved track list
+(the most common artist across its tracks, ignoring "feat." guests). The WiiM only reports the
+current *track's* artist, which can change within an album: on Daft Punk's *Random Access
+Memories* most tracks are "Daft Punk feat. ..." and one is credited to "Thomas Bangalter"
+alone, which used to save the same album several times.
+
 Limits worth knowing:
 
 - **Only sources that play from a queue on the WiiM show up**: albums started from the WiiM

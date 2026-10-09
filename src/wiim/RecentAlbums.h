@@ -27,7 +27,7 @@ constexpr int kThumbSize = 68;
 struct Entry {
   int slot = -1; // stable storage slot (0..kMaxAlbums-1); thumbnails and files are keyed on it
   String album;
-  String artist;
+  String artist; // the album's main artist, worked out from its tracks (not one track's artist)
   String queueName; // XML-escaped, ready to drop into a SOAP argument
 };
 
@@ -35,6 +35,11 @@ struct List {
   Entry items[kMaxAlbums]; // most recent first
   int count = 0;
 };
+
+// Whether two (album, artist) pairs are the same album. Artists are compared on their main
+// artist only, since the WiiM reports each track's artist ("Daft Punk, Pharrell Williams").
+bool sameAlbum(const String &albumA, const String &artistA, const String &albumB, const String &artistB);
+String primaryArtist(const String &artist);
 
 // Mounts flash storage and loads the saved list + thumbnails.
 void begin();

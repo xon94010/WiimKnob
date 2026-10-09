@@ -73,6 +73,70 @@ void loadThumb(int slot) {
   f.close();
 }
 
+int findByAlbum(const String &album, const String &artist); // defined below
+
+// The album's own artist, worked out from a saved queue: the most common main artist among the
+// queue's tracks from this album. The WiiM only reports the current *track's* artist, which
+// varies within an album -- on Random Access Memories most tracks are "Daft Punk feat. ..." but
+// one is credited to "Thomas Bangalter" alone -- so matching albums on that saved the same album
+// several times. Falls back to `fallback` if the queue doesn't say.
+String albumArtistFromQueue(const String &rawContext, const String &album, const String &fallback) {
+  String decoded = rawContext;
+  xmlUnescapeOnce(decoded);
+  xmlUnescapeOnce(decoded);
+
+  constexpr int kMaxArtists = 12;
+  String names[kMaxArtists];   // original spelling of the first track seen per main artist
+  String keys[kMaxArtists];
+  int counts[kMaxArtists] = {};
+  int distinct = 0;
+
+  int pos = 0;
+  while (true) {
+    int albumAt = decoded.indexOf("<upnp:album>", pos);
+    if (albumAt < 0) break;
+    int albumEnd = decoded.indexOf("</upnp:album>", albumAt);
+    if (albumEnd < 0) break;
+    String trackAlbum = decoded.substring(albumAt + 12, albumEnd);
+    // This track's artist is the last <upnp:artist> before its album tag.
+    int artistAt = decoded.lastIndexOf("<upnp:artist>", albumAt);
+    pos = albumEnd;
+    if (artistAt < 0 || !trackAlbum.equalsIgnoreCase(album)) continue;
+    int artistEnd = decoded.indexOf("</upnp:artist>", artistAt);
+    if (artistEnd < 0 || artistEnd > albumAt) continue;
+    String artist = decoded.substring(artistAt + 13, artistEnd);
+    String key = primaryArtist(artist);
+    int i = 0;
+    while (i < distinct && keys[i] != key) i++;
+    if (i == distinct) {
+      if (distinct == kMaxArtists) continue;
+      keys[i] = key;
+      names[i] = artist;
+      distinct++;
+    }
+    counts[i]++;
+  }
+  int best = -1;
+  for (int i = 0; i < distinct; i++) {
+    if (best < 0 || counts[i] > counts[best]) best = i;
+  }
+  if (best < 0) return fallback;
+  // Keep only the main-artist part of the spelling we saw ("Daft Punk", not "Daft Punk feat. X").
+  String name = names[best];
+  int cut = name.length();
+  String lower = name;
+  lower.toLowerCase();
+  static const char *kSeparators[] = {",", ";", " feat", " ft.", " featuring", " & ", " and ", " with ", " x ", " / "};
+  for (const char *sep : kSeparators) {
+    int at = lower.indexOf(sep);
+    if (at > 0 && at < cut) cut = at;
+  }
+  name = name.substring(0, cut);
+  name.trim();
+  return name;
+}
+
+
 void loadIndex() {
   entries.count = 0;
   File f = LittleFS.open(kIndexPath, "r");
@@ -81,22 +145,74 @@ void loadIndex() {
   DeserializationError err = deserializeJson(doc, f);
   f.close();
   if (err) return;
+  bool indexChanged = false; // duplicates dropped or artists re-derived: rewrite the index
   for (JsonObject o : doc.as<JsonArray>()) {
     if (entries.count >= kMaxAlbums) break;
     int slot = o["slot"] | -1;
     if (slot < 0 || slot >= kMaxAlbums || !LittleFS.exists(queuePath(slot))) continue;
+    String album = o["album"].as<String>();
+    String artist = o["artist"].as<String>();
+    // Re-derive the album artist from the saved queue, so lists saved before this matched on
+    // the album's own artist (see albumArtistFromQueue) merge their duplicates now.
+    {
+      File q = LittleFS.open(queuePath(slot), "r");
+      if (q) {
+        String derived = albumArtistFromQueue(q.readString(), album, artist);
+        q.close();
+        if (derived != artist) {
+          artist = derived;
+          indexChanged = true;
+        }
+      }
+    }
+    // Lists saved before albums were matched on their main artist only can hold the same
+    // album several times (one per featured-artist variant) -- keep the newest, drop the rest.
+    if (findByAlbum(album, artist) >= 0) {
+      LittleFS.remove(queuePath(slot));
+      LittleFS.remove(thumbPath(slot));
+      indexChanged = true;
+      continue;
+    }
     Entry &e = entries.items[entries.count++];
     e.slot = slot;
-    e.album = o["album"].as<String>();
-    e.artist = o["artist"].as<String>();
+    e.album = album;
+    e.artist = artist;
     e.queueName = o["queue"].as<String>();
     loadThumb(slot);
   }
+  if (indexChanged) {
+    saveIndex();
+  }
 }
+
+} // namespace
+
+// The WiiM reports the *track's* artist, which can change within one album ("Daft Punk", then
+// "Daft Punk, Pharrell Williams, Nile Rodgers") -- matching on the full string saved the same
+// album once per variant. Match on the album title plus the main artist only.
+String primaryArtist(const String &artist) {
+  String a = artist;
+  a.toLowerCase();
+  static const char *kSeparators[] = {",", ";", " feat", " ft.", " featuring", " & ", " and ", " with ", " x ", " / "};
+  int cut = a.length();
+  for (const char *sep : kSeparators) {
+    int i = a.indexOf(sep);
+    if (i > 0 && i < cut) cut = i;
+  }
+  a = a.substring(0, cut);
+  a.trim();
+  return a;
+}
+
+bool sameAlbum(const String &albumA, const String &artistA, const String &albumB, const String &artistB) {
+  return albumA.equalsIgnoreCase(albumB) && primaryArtist(artistA) == primaryArtist(artistB);
+}
+
+namespace {
 
 int findByAlbum(const String &album, const String &artist) {
   for (int i = 0; i < entries.count; i++) {
-    if (entries.items[i].album == album && entries.items[i].artist == artist) return i;
+    if (sameAlbum(entries.items[i].album, entries.items[i].artist, album, artist)) return i;
   }
   return -1;
 }
@@ -178,7 +294,9 @@ bool notePlaying(WiimClient &client, const TrackMetadata &meta, const PlayerStat
   if (!fsReady || state.status != "play" || isUnknown(meta.album) || isExternalSource(state.mode)) {
     return false;
   }
-  String key = meta.album + "\x1f" + meta.artist;
+  // Album title only: the track artist can change within an album (see albumArtistFromQueue).
+  String key = meta.album;
+  key.toLowerCase();
   if (key == lastNotedKey) {
     return false;
   }
@@ -219,7 +337,8 @@ bool notePlaying(WiimClient &client, const TrackMetadata &meta, const PlayerStat
   }
 
   xSemaphoreTake(lock, portMAX_DELAY);
-  int existing = findByAlbum(meta.album, meta.artist);
+  String albumArtist = albumArtistFromQueue(response.substring(start, end), meta.album, meta.artist);
+  int existing = findByAlbum(meta.album, albumArtist);
   int slot;
   if (existing >= 0) {
     slot = entries.items[existing].slot;
@@ -268,7 +387,7 @@ bool notePlaying(WiimClient &client, const TrackMetadata &meta, const PlayerStat
   Entry &e = entries.items[0];
   e.slot = slot;
   e.album = meta.album;
-  e.artist = meta.artist;
+  e.artist = albumArtist;
   e.queueName = queueName;
   saveIndex();
   xSemaphoreGive(lock);

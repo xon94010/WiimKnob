@@ -107,7 +107,9 @@ void syncRecent() {
     const wiim::recent::Entry &e = list.items[i];
     tiles[i].id = e.slot;
     tiles[i].thumb = wiim::task::getRecentThumbnail(e.slot);
-    tiles[i].playing = e.album == meta.album && e.artist == meta.artist;
+    // Title only: the WiiM reports each track's own artist, which needn't match the album's
+    // (a "Thomas Bangalter" track on a Daft Punk album).
+    tiles[i].playing = e.album.length() > 0 && e.album.equalsIgnoreCase(meta.album);
   }
   ui::setRecent(tiles, list.count);
 }
